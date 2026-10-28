@@ -16,17 +16,17 @@ TELEGRAM_ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
 
 # Groq (DeepSeek R1 gratuit)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "").strip() or "qwen/qwen3.8-27b"
 
 # Gemini AI (alternative)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip() or "gemini-2.0-flash"
 
 # Paramètres de publication
-FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "30"))
-MAX_POSTS_PER_RUN = int(os.getenv("MAX_POSTS_PER_RUN", "3"))
-MIN_RELEVANCE_SCORE = int(os.getenv("MIN_RELEVANCE_SCORE", "7"))
-COMMUNITY_HASHTAG = os.getenv("COMMUNITY_HASHTAG", "#MxMAcademy").strip()
+FETCH_INTERVAL_MINUTES = int(os.getenv("FETCH_INTERVAL_MINUTES", "").strip() or "30")
+MAX_POSTS_PER_RUN = int(os.getenv("MAX_POSTS_PER_RUN", "").strip() or "3")
+MIN_RELEVANCE_SCORE = int(os.getenv("MIN_RELEVANCE_SCORE", "").strip() or "7")
+COMMUNITY_HASHTAG = os.getenv("COMMUNITY_HASHTAG", "").strip() or "#MxMAcademy"
 
 # Base de données SQLite
 DB_PATH = DATA_DIR / "news_bot.db"
