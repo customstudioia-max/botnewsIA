@@ -27,6 +27,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Vérifier les secrets obligatoires
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          missing=""
+          [ -z "$TELEGRAM_BOT_TOKEN" ] && missing="$missing TELEGRAM_BOT_TOKEN"
+          [ -z "$TELEGRAM_CHANNEL_ID" ] && missing="$missing TELEGRAM_CHANNEL_ID"
+          [ -z "$GROQ_API_KEY" ] && missing="$missing GROQ_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Secrets manquants :$missing — configure-les dans Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          echo "Tous les secrets sont configurés."
+
       - name: Exécuter le cycle de veille
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
