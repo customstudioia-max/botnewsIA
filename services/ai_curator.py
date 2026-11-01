@@ -20,9 +20,12 @@ MIN_PRO_SCORE = int(os.getenv("MIN_PRO_SCORE", "").strip() or "6")
 MIN_VIP_SCORE = int(os.getenv("MIN_VIP_SCORE", "").strip() or "6")
 
 # Limites de longueur (Telegram accepte 4096 caractères max par message)
-MAX_FREE_CHARS = 900
-MAX_PRO_CHARS = 2200
-MAX_VIP_CHARS = 2000
+MAX_FREE_CHARS = 800
+MAX_PRO_CHARS = 2400
+MAX_VIP_CHARS = 2200
+
+# Séparateur entre le résumé (légende de l'image) et le contenu détaillé (page Instant View)
+DETAILS_MARK = "===DETAILS==="
 
 
 class AICurator:
@@ -189,12 +192,11 @@ Réponds UNIQUEMENT avec ce JSON :
 Rôle : informer simplement, prouver la valeur du service et donner envie de s'abonner.
 Structure obligatoire :
 - Un titre court et accrocheur avec 1 émoji, en gras (*Titre*).
-- Un résumé en 2 ou 3 phrases simples, sans jargon.
-- La source avec un lien : [Nom de la source](lien).
+- Un résumé en 2 ou 3 phrases simples, sans jargon, avec 2 ou 3 émojis bien placés.
 - {teaser_rule}
 - Une dernière ligne : 👉 S'abonner : {LANDING_URL}
 
-Règles : {MAX_FREE_CHARS} caractères maximum. N'invente aucun fait ni chiffre absent de l'actualité.
+Règles : 700 caractères maximum au total (le texte sera la légende d'une image). Pas de lien vers la source : un bouton s'en charge. N'invente aucun fait ni chiffre absent de l'actualité.
 Format Telegram : *gras* avec un seul astérisque, _italique_, [texte](lien). Pas de titres avec #.
 Réponds uniquement avec le texte de la publication, sans introduction ni commentaire."""
         try:
@@ -208,9 +210,17 @@ Réponds uniquement avec le texte de la publication, sans introduction ni commen
         user = f"""Rédige la publication du CANAL AIBEACONS PRO (abonnés qui veulent APPRENDRE et utiliser l'IA) à partir de cette actualité :
 {self._article_block(article)}
 
-Structure obligatoire :
-🎓 *TITRE CLAIR* — [Catégorie : Agents, No-Code, Prompting, Modèles ou Outils]
+Ta réponse a DEUX PARTIES, séparées par une ligne contenant uniquement {DETAILS_MARK}
 
+PARTIE 1 : le résumé affiché dans le canal, avec l'image (600 caractères maximum) :
+🎓 *TITRE CLAIR* avec 1 émoji
+Un résumé de la news en 2 ou 3 phrases simples, avec 2 ou 3 émojis bien placés.
+🏷️ Catégorie : Agents, No-Code, Prompting, Modèles ou Outils
+👇 Appuyez sur le bouton ci-dessous pour lire le tuto et récupérer le prompt.
+
+{DETAILS_MARK}
+
+PARTIE 2 : la page lue dans Telegram (1500 caractères maximum) :
 📰 *En 3 points*
 • point 1
 • point 2
@@ -226,11 +236,9 @@ Un prompt concret lié à cette actualité, entre accents graves (`...`).
 
 💡 *Pourquoi c'est utile* : le gain de temps ou de productivité direct, en une phrase.
 
-🔗 Source : [Nom](lien)
-
-Règles : {MAX_PRO_CHARS} caractères maximum. Reste fidèle à l'actualité : n'invente aucune fonctionnalité, aucun prix, aucune étape qui n'existe pas. Si l'actualité ne permet pas un vrai tutoriel, propose une manière concrète d'exploiter l'information sans prétendre qu'un outil fait ce qu'il ne fait pas.
-Format Telegram : *gras* avec un seul astérisque, _italique_, `code`, [texte](lien). Pas de titres avec #.
-Réponds uniquement avec le texte de la publication, sans introduction ni commentaire."""
+Règles : reste fidèle à l'actualité : n'invente aucune fonctionnalité, aucun prix, aucune étape qui n'existe pas. Si l'actualité ne permet pas un vrai tutoriel, propose une manière concrète d'exploiter l'information sans prétendre qu'un outil fait ce qu'il ne fait pas. Pas de lien vers la source : un bouton s'en charge.
+Format Telegram : *gras* avec un seul astérisque, _italique_, `code`. Pas de titres avec #.
+Réponds uniquement avec le texte, sans introduction ni commentaire."""
         try:
             return self._clean_text(self._complete(system, user, max_tokens=3000), MAX_PRO_CHARS)
         except Exception as e:
@@ -242,24 +250,29 @@ Réponds uniquement avec le texte de la publication, sans introduction ni commen
         user = f"""Rédige la publication du CANAL VIP INVESTISSEURS (décideurs et investisseurs) à partir de cette actualité :
 {self._article_block(article)}
 
-Structure obligatoire :
-🚨 *ALERTE MARCHÉ IA* : titre d'impact
+Ta réponse a DEUX PARTIES, séparées par une ligne contenant uniquement {DETAILS_MARK}
 
+PARTIE 1 : le résumé affiché dans le canal, avec l'image (600 caractères maximum) :
+🚨 *ALERTE MARCHÉ IA* : titre d'impact
+Un résumé de la news en 2 ou 3 phrases, avec 2 ou 3 émojis bien placés.
+👇 Appuyez sur le bouton ci-dessous pour lire l'analyse complète.
+
+{DETAILS_MARK}
+
+PARTIE 2 : la page lue dans Telegram (1500 caractères maximum) :
 📊 *Données clés* : montants, valorisation, part de marché ou variation de prix, uniquement s'ils figurent dans l'actualité. Sinon écris « Non communiqué ».
 
 🔍 *Analyse d'impact*
 • Qui gagne : ...
 • Qui est fragilisé : ...
 
-📈 *Signal & opportunité* : ce que cela annonce pour le secteur dans les 6 à 12 mois, présenté comme une analyse et non comme une certitude.
+📈 *Signal et opportunité* : ce que cela annonce pour le secteur dans les 6 à 12 mois, présenté comme une analyse et non comme une certitude.
 
 🛡️ *Importance stratégique* : X/10
 
-📑 Source : [Nom](lien)
-
-Règles : {MAX_VIP_CHARS} caractères maximum. N'invente JAMAIS de chiffres ni de faits absents de l'actualité. Ceci est une analyse d'information, pas un conseil d'investissement personnalisé.
-Format Telegram : *gras* avec un seul astérisque, _italique_, [texte](lien). Pas de titres avec #.
-Réponds uniquement avec le texte de la publication, sans introduction ni commentaire."""
+Règles : n'invente JAMAIS de chiffres ni de faits absents de l'actualité. Ceci est une analyse d'information, pas un conseil d'investissement personnalisé. Pas de lien vers la source : un bouton s'en charge.
+Format Telegram : *gras* avec un seul astérisque, _italique_. Pas de titres avec #.
+Réponds uniquement avec le texte, sans introduction ni commentaire."""
         try:
             return self._clean_text(self._complete(system, user, max_tokens=3000), MAX_VIP_CHARS)
         except Exception as e:

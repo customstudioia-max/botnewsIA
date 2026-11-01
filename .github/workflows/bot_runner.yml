@@ -6,6 +6,10 @@ on:
     - cron: '*/30 * * * *'
   workflow_dispatch: # Permet de lancer le bot manuellement via un bouton sur GitHub
 
+concurrency:
+  group: bot-news
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -51,6 +55,8 @@ jobs:
           TELEGRAM_CHANNEL_ID_APPRENTICES: ${{ secrets.TELEGRAM_CHANNEL_ID_APPRENTICES }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PYTHONUNBUFFERED: "1"
+          MIN_PRO_SCORE: "1"
+          MAX_POSTS_PER_RUN: "2"
         run: |
           python main.py --run-once
 
@@ -59,4 +65,4 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add data/news_bot.db
-          git diff --staged --quiet || (git commit -m "chore: synchronisation base de donnees [skip ci]" && git push)
+          git diff --staged --quiet || (git commit -m "chore: synchronisation base de donnees [skip ci]" && git pull --rebase -X theirs origin main && git push)
