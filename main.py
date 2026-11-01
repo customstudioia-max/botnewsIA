@@ -63,7 +63,7 @@ async def run_pipeline() -> None:
 
     logger.info(f"Collecte terminée : {total_discovered} articles découverts, {new_articles_count} nouveaux enregistrés.")
 
-    # 2. Curation & Synthèse avec l'IA (Groq / Gemini)
+    # 2. Curation & Synthèse avec l'IA : un texte différent par canal
     unprocessed = database.get_unprocessed_articles(limit=10)
     if not unprocessed:
         logger.info("Aucun nouvel article à analyser.")
@@ -94,8 +94,18 @@ async def run_pipeline() -> None:
             )
             if curation.get("is_duplicate"):
                 logger.info("Article rejeté : doublon d'un sujet déjà publié.")
-            elif curation["is_selected"] and curation["telegram_message"]:
-                logger.info(f"Article retenu (score: {curation['relevance_score']}/10)")
+            elif curation["is_selected"]:
+                destinations = [
+                    name for name, key in (
+                        ("Gratuit", "channel_free"),
+                        ("Pro", "channel_apprentices"),
+                        ("VIP", "channel_investors"),
+                    ) if curation.get(key)
+                ]
+                logger.info(
+                    f"Article retenu (score: {curation['relevance_score']}/10) "
+                    f"-> canaux : {', '.join(destinations)}"
+                )
 
                 # Récupération de l'image de la news (du flux ou extraction directe de la page)
                 image_url = art.get("image_url")
@@ -106,38 +116,42 @@ async def run_pipeline() -> None:
                 posts_to_publish.append({
                     "id": art["id"],
                     "title": art["title"],
-                    "message": curation["telegram_message"],
-                    "channel_free": curation.get("channel_free") or curation["telegram_message"],
+                    "channel_free": curation.get("channel_free", ""),
                     "channel_apprentices": curation.get("channel_apprentices", ""),
                     "channel_investors": curation.get("channel_investors", ""),
                     "image_url": image_url,
                     "source_url": art.get("url")
                 })
+            else:
+                logger.info(f"Article non retenu (score: {curation['relevance_score']}/10).")
         # Pause légère pour respecter les quotas de l'API
         await asyncio.sleep(2)
 
-    # 3. Publication sur Telegram (Diffusion sur les 3 canaux configurés)
+    # 3. Publication sur Telegram : chaque canal reçoit UNIQUEMENT son propre texte
     logger.info(f"Articles qualifiés pour publication : {len(posts_to_publish)}")
     published_count = 0
 
     for item in posts_to_publish[:config.MAX_POSTS_PER_RUN]:
         safe_title = item['title'][:50].encode('ascii', errors='ignore').decode('ascii')
         logger.info(f"Publication sur Telegram (AIBeacons) : '{safe_title}...'")
+        sent_somewhere = False
 
         # 1. Canal Gratuit (Aimant & Teaser)
-        ok_free = await telegram.send_news_post(
-            text=item["channel_free"],
-            image_url=item.get("image_url"),
-            source_url=item.get("source_url"),
-            channel_id=config.TELEGRAM_CHANNEL_ID_FREE,
-            channel_name="Canal Gratuit"
-        )
-        if ok_free:
-            database.mark_as_posted(item["id"], "free")
-
-        # 2. Canal Apprentis (si configuré et message présent)
-        if config.TELEGRAM_CHANNEL_ID_APPRENTICES and item.get("channel_apprentices"):
+        if config.TELEGRAM_CHANNEL_ID_FREE and item.get("channel_free"):
+            ok_free = await telegram.send_news_post(
+                text=item["channel_free"],
+                image_url=item.get("image_url"),
+                source_url=item.get("source_url"),
+                channel_id=config.TELEGRAM_CHANNEL_ID_FREE,
+                channel_name="Canal Gratuit"
+            )
+            if ok_free:
+                database.mark_as_posted(item["id"], "free")
+                sent_somewhere = True
             await asyncio.sleep(2)
+
+        # 2. Canal Pro / Apprentis
+        if config.TELEGRAM_CHANNEL_ID_APPRENTICES and item.get("channel_apprentices"):
             ok_app = await telegram.send_news_post(
                 text=item["channel_apprentices"],
                 image_url=item.get("image_url"),
@@ -147,10 +161,11 @@ async def run_pipeline() -> None:
             )
             if ok_app:
                 database.mark_as_posted(item["id"], "apprentices")
-
-        # 3. Canal Investisseurs (si configuré et message présent)
-        if config.TELEGRAM_CHANNEL_ID_INVESTORS and item.get("channel_investors"):
+                sent_somewhere = True
             await asyncio.sleep(2)
+
+        # 3. Canal VIP / Investisseurs
+        if config.TELEGRAM_CHANNEL_ID_INVESTORS and item.get("channel_investors"):
             ok_inv = await telegram.send_news_post(
                 text=item["channel_investors"],
                 image_url=item.get("image_url"),
@@ -160,15 +175,17 @@ async def run_pipeline() -> None:
             )
             if ok_inv:
                 database.mark_as_posted(item["id"], "investors")
+                sent_somewhere = True
+            await asyncio.sleep(2)
 
-        if ok_free:
+        if sent_somewhere:
             published_count += 1
             # Délai entre deux publications pour éviter le flood
             await asyncio.sleep(4)
         else:
-            logger.warning(f"Échec de publication principale pour l'article #{item['id']}")
+            logger.warning(f"Aucune publication réussie pour l'article #{item['id']}")
 
-    logger.info(f"=== Fin du cycle : {published_count} messages publiés sur Telegram ===")
+    logger.info(f"=== Fin du cycle : {published_count} articles publiés sur Telegram ===")
 
 def display_status():
     """Affiche l'état des configurations et les statistiques de la base."""

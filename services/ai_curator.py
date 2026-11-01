@@ -1,15 +1,29 @@
+import os
 import re
 import json
+import time
 import logging
-from datetime import datetime
 from typing import Dict, Any, Optional, List
 from config import (
     GROQ_API_KEY, GROQ_MODEL,
     GEMINI_API_KEY, GEMINI_MODEL,
-    MIN_RELEVANCE_SCORE, COMMUNITY_HASHTAG, LANDING_URL
+    MIN_RELEVANCE_SCORE, LANDING_URL
 )
 
 logger = logging.getLogger(__name__)
+
+# Seuils de sélection par canal (modifiables via variables d'environnement)
+# - Gratuit  : MIN_RELEVANCE_SCORE (déjà dans config.py, 7 par défaut)
+# - Pro      : MIN_PRO_SCORE  (valeur pédagogique de la news, 6 par défaut)
+# - VIP      : MIN_VIP_SCORE  (valeur marché / stratégie de la news, 6 par défaut)
+MIN_PRO_SCORE = int(os.getenv("MIN_PRO_SCORE", "").strip() or "6")
+MIN_VIP_SCORE = int(os.getenv("MIN_VIP_SCORE", "").strip() or "6")
+
+# Limites de longueur (Telegram accepte 4096 caractères max par message)
+MAX_FREE_CHARS = 900
+MAX_PRO_CHARS = 2200
+MAX_VIP_CHARS = 2000
+
 
 class AICurator:
     def __init__(self):
@@ -33,6 +47,9 @@ class AICurator:
         else:
             logger.warning("Aucune clé API IA configurée.")
 
+    # ------------------------------------------------------------------
+    # Utilitaires
+    # ------------------------------------------------------------------
     def _strip_think_tags(self, text: str) -> str:
         """Supprime les balises <think>...</think> générées par certains modèles."""
         return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
@@ -46,143 +63,271 @@ class AICurator:
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start != -1 and end != -1:
-            cleaned = cleaned[start:end+1]
+            cleaned = cleaned[start:end + 1]
 
         return json.loads(cleaned)
 
+    def _clean_text(self, text: str, max_chars: int) -> str:
+        """Nettoie une réponse texte et la coupe proprement si elle est trop longue."""
+        text = self._strip_think_tags(text or "")
+        # Retire un éventuel bloc ``` qui entourerait toute la réponse
+        text = re.sub(r"^```[a-zA-Z]*\s*\n", "", text)
+        text = re.sub(r"\n```\s*$", "", text).strip()
+        if len(text) > max_chars:
+            text = text[:max_chars].rsplit("\n", 1)[0].rstrip() + "\n…"
+        return text
+
+    def _complete(self, system: str, user: str, max_tokens: int, json_mode: bool = False) -> str:
+        """Appel au modèle, avec une nouvelle tentative en cas d'erreur (quota, réseau)."""
+        last_error = None
+        for attempt in range(2):
+            try:
+                if self.provider == "groq":
+                    kwargs = dict(
+                        model=GROQ_MODEL,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user}
+                        ],
+                        temperature=0.3,
+                        max_tokens=max_tokens,
+                    )
+                    if json_mode:
+                        kwargs["response_format"] = {"type": "json_object"}
+                    response = self.groq_client.chat.completions.create(**kwargs)
+                    return response.choices[0].message.content or ""
+                else:
+                    from google.genai import types
+                    cfg = dict(temperature=0.3, system_instruction=system)
+                    if json_mode:
+                        cfg["response_mime_type"] = "application/json"
+                    response = self.gemini_client.models.generate_content(
+                        model=GEMINI_MODEL,
+                        contents=user,
+                        config=types.GenerateContentConfig(**cfg)
+                    )
+                    return response.text or ""
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Appel IA échoué (tentative {attempt + 1}/2) : {e}")
+                time.sleep(5)
+        raise last_error
+
+    @staticmethod
+    def _article_block(article: Dict[str, Any]) -> str:
+        return (
+            f"- Titre : {article.get('title')}\n"
+            f"- Source : {article.get('source_name')}\n"
+            f"- Résumé / Contenu : {article.get('raw_summary', '')}\n"
+            f"- Lien : {article.get('url')}"
+        )
+
+    # ------------------------------------------------------------------
+    # Étape 1 : classer la news (un seul petit appel)
+    # ------------------------------------------------------------------
+    def _classify(self, article: Dict[str, Any], recent_topics: List[str]) -> Optional[Dict[str, Any]]:
+        recent_topics_str = "\n".join(f"- {t}" for t in (recent_topics or [])[:15]) or "Aucun sujet récent."
+
+        system = (
+            "Tu es le rédacteur en chef d'AIBeacons, un service de veille sur l'intelligence artificielle. "
+            "Tu réponds UNIQUEMENT avec un JSON valide."
+        )
+        user = f"""Voici une actualité collectée :
+{self._article_block(article)}
+
+--- SUJETS DÉJÀ PUBLIÉS RÉCEMMENT (NE PAS RÉPÉTER) ---
+{recent_topics_str}
+
+Évalue cette actualité :
+1. "is_duplicate" : true si elle traite du MÊME sujet ou événement qu'un sujet déjà publié ci-dessus.
+2. "relevance_score" (1 à 10) : importance générale pour le grand public intéressé par l'IA.
+3. "learning_score" (1 à 10) : utilité pour quelqu'un qui APPREND à utiliser l'IA (nouvel outil utilisable maintenant, technique de prompting, tutoriel, modèle ou projet open-source à essayer, fonctionnalité concrète). Une annonce purement financière ou un article de recherche très théorique vaut peu.
+4. "market_score" (1 à 10) : importance pour un INVESTISSEUR ou un décideur (levée de fonds, valorisation, acquisition, stratégie d'une grande entreprise, prix des API, régulation, puces, impact sur un secteur). Un simple tutoriel vaut peu.
+
+Sois exigeant : réserve les notes >= 7 aux informations vraiment importantes.
+
+Réponds UNIQUEMENT avec ce JSON :
+{{"is_duplicate": false, "relevance_score": 5, "learning_score": 5, "market_score": 5}}"""
+
+        try:
+            raw = self._complete(system, user, max_tokens=1500, json_mode=True)
+            data = self._extract_json(raw)
+            return {
+                "is_duplicate": bool(data.get("is_duplicate", False)),
+                "relevance_score": int(data.get("relevance_score", 0)),
+                "learning_score": int(data.get("learning_score", 0)),
+                "market_score": int(data.get("market_score", 0)),
+            }
+        except Exception as e:
+            logger.error(f"Erreur classification IA ({self.provider}) pour '{article.get('title')}': {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Étape 2 : rédiger un texte DIFFÉRENT par canal (appels séparés)
+    # ------------------------------------------------------------------
+    def _write_free(self, article: Dict[str, Any], teaser: str) -> str:
+        if teaser == "pro":
+            teaser_rule = (
+                "Termine par un teaser verrouillé vers le canal AIBeacons Pro, par exemple : "
+                "« 🔒 Le prompt prêt à copier-coller et le mini-tutoriel pas-à-pas sont dans AIBeacons Pro. »"
+            )
+        elif teaser == "vip":
+            teaser_rule = (
+                "Termine par un teaser verrouillé vers le canal VIP Investisseurs, par exemple : "
+                "« 🔒 L'analyse d'impact et les opportunités de marché sont réservées aux membres VIP. »"
+            )
+        else:
+            teaser_rule = (
+                "Termine par une phrase qui invite à rejoindre les canaux payants "
+                "(AIBeacons Pro pour apprendre, VIP pour les analyses de marché)."
+            )
+
+        system = "Tu rédiges des publications Telegram courtes et claires en français."
+        user = f"""Rédige la publication du CANAL GRATUIT d'AIBeacons à partir de cette actualité :
+{self._article_block(article)}
+
+Rôle : informer simplement, prouver la valeur du service et donner envie de s'abonner.
+Structure obligatoire :
+- Un titre court et accrocheur avec 1 émoji, en gras (*Titre*).
+- Un résumé en 2 ou 3 phrases simples, sans jargon.
+- La source avec un lien : [Nom de la source](lien).
+- {teaser_rule}
+- Une dernière ligne : 👉 S'abonner : {LANDING_URL}
+
+Règles : {MAX_FREE_CHARS} caractères maximum. N'invente aucun fait ni chiffre absent de l'actualité.
+Format Telegram : *gras* avec un seul astérisque, _italique_, [texte](lien). Pas de titres avec #.
+Réponds uniquement avec le texte de la publication, sans introduction ni commentaire."""
+        try:
+            return self._clean_text(self._complete(system, user, max_tokens=2500), MAX_FREE_CHARS)
+        except Exception as e:
+            logger.error(f"Erreur rédaction canal Gratuit : {e}")
+            return ""
+
+    def _write_pro(self, article: Dict[str, Any]) -> str:
+        system = "Tu es un formateur en IA qui rédige des publications Telegram pratiques en français."
+        user = f"""Rédige la publication du CANAL AIBEACONS PRO (abonnés qui veulent APPRENDRE et utiliser l'IA) à partir de cette actualité :
+{self._article_block(article)}
+
+Structure obligatoire :
+🎓 *TITRE CLAIR* — [Catégorie : Agents, No-Code, Prompting, Modèles ou Outils]
+
+📰 *En 3 points*
+• point 1
+• point 2
+• point 3
+
+🛠️ *Comment l'essayer tout de suite*
+1. étape 1
+2. étape 2
+3. étape 3
+
+📋 *Prompt prêt à copier-coller*
+Un prompt concret lié à cette actualité, entre accents graves (`...`).
+
+💡 *Pourquoi c'est utile* : le gain de temps ou de productivité direct, en une phrase.
+
+🔗 Source : [Nom](lien)
+
+Règles : {MAX_PRO_CHARS} caractères maximum. Reste fidèle à l'actualité : n'invente aucune fonctionnalité, aucun prix, aucune étape qui n'existe pas. Si l'actualité ne permet pas un vrai tutoriel, propose une manière concrète d'exploiter l'information sans prétendre qu'un outil fait ce qu'il ne fait pas.
+Format Telegram : *gras* avec un seul astérisque, _italique_, `code`, [texte](lien). Pas de titres avec #.
+Réponds uniquement avec le texte de la publication, sans introduction ni commentaire."""
+        try:
+            return self._clean_text(self._complete(system, user, max_tokens=3000), MAX_PRO_CHARS)
+        except Exception as e:
+            logger.error(f"Erreur rédaction canal Pro : {e}")
+            return ""
+
+    def _write_vip(self, article: Dict[str, Any]) -> str:
+        system = "Tu es un analyste qui rédige des notes de marché Telegram concises en français."
+        user = f"""Rédige la publication du CANAL VIP INVESTISSEURS (décideurs et investisseurs) à partir de cette actualité :
+{self._article_block(article)}
+
+Structure obligatoire :
+🚨 *ALERTE MARCHÉ IA* : titre d'impact
+
+📊 *Données clés* : montants, valorisation, part de marché ou variation de prix, uniquement s'ils figurent dans l'actualité. Sinon écris « Non communiqué ».
+
+🔍 *Analyse d'impact*
+• Qui gagne : ...
+• Qui est fragilisé : ...
+
+📈 *Signal & opportunité* : ce que cela annonce pour le secteur dans les 6 à 12 mois, présenté comme une analyse et non comme une certitude.
+
+🛡️ *Importance stratégique* : X/10
+
+📑 Source : [Nom](lien)
+
+Règles : {MAX_VIP_CHARS} caractères maximum. N'invente JAMAIS de chiffres ni de faits absents de l'actualité. Ceci est une analyse d'information, pas un conseil d'investissement personnalisé.
+Format Telegram : *gras* avec un seul astérisque, _italique_, [texte](lien). Pas de titres avec #.
+Réponds uniquement avec le texte de la publication, sans introduction ni commentaire."""
+        try:
+            return self._clean_text(self._complete(system, user, max_tokens=3000), MAX_VIP_CHARS)
+        except Exception as e:
+            logger.error(f"Erreur rédaction canal VIP : {e}")
+            return ""
+
+    # ------------------------------------------------------------------
+    # Point d'entrée utilisé par main.py
+    # ------------------------------------------------------------------
     def evaluate_and_format(self, article: Dict[str, Any], recent_topics: List[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Évalue la pertinence de l'article, vérifie les doublons thématiques,
-        et génère les 3 versions spécialisées pour AIBeacons :
-        1. Canal Gratuit (Aimant & Teaser)
-        2. Canal Apprentis (19,99 € - Pratique & Tuto/Prompt)
-        3. Canal Investisseurs (39,99 € - Marchés & Stratégie)
+        Classe la news puis rédige, pour chaque canal concerné, un texte qui lui est propre :
+        - Gratuit : news importantes (score général >= MIN_RELEVANCE_SCORE) + teaser vers les canaux payants
+        - Pro     : news utiles pour apprendre (learning_score >= MIN_PRO_SCORE)
+        - VIP     : news marché / stratégie (market_score >= MIN_VIP_SCORE)
+        Un canal dont la news ne correspond pas reçoit une chaîne vide et est ignoré par main.py.
         """
         if not self.provider:
             logger.error("Aucun fournisseur d'IA disponible.")
             return None
 
-        recent_topics_str = ""
-        if recent_topics:
-            recent_topics_str = "\n".join(f"- {t}" for t in recent_topics[:15])
-
-        prompt = f"""Tu es le moteur éditorial de « AIBeacons », un service d'intelligence artificielle diffusé sur 3 canaux Telegram distincts.
-Pour chaque actualité IA reçue en entrée, tu dois évaluer sa pertinence et générer 3 versions adaptées aux objectifs et au prix de chaque canal.
-
-Voici l'article collecté :
-- Titre : {article.get('title')}
-- Source : {article.get('source_name')}
-- Résumé / Contenu : {article.get('raw_summary', '')}
-- Lien : {article.get('url')}
-
---- SUJETS DÉJÀ PUBLIÉS RÉCEMMENT (NE PAS RÉPÉTER) ---
-{recent_topics_str or "Aucun sujet récent."}
-
-Consignes STRICTES :
-1. DÉDOUBLONNAGE : Si cet article traite du MÊME sujet ou événement qu'une des actualités déjà publiées ci-dessus, rejette-le immédiatement ("is_duplicate": true, "is_selected": false).
-2. PERTINENCE : Note de 1 à 10. Ne retiens que les informations majeures, outils concrets ou annonces importantes (note >= {MIN_RELEVANCE_SCORE}).
-
-3. RÉDACTION DES 3 CANAUX :
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CANAL 1 : GRATUIT (0 € / mois) — L'Aimant & Teaser
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Rôle : Informer simplement sans saturer, prouver la valeur et donner envie de passer à l'abonnement payant.
-• Structure obligatoire :
-  - Titre court et accrocheur avec 1 émoji.
-  - Résumé en 2 ou 3 phrases simples (zéro jargon).
-  - La source officielle avec lien hypertexte.
-  - LE TEASER DE CONVERSION (Obligatoire) : Donne un début d'astuce ou annonce l'enjeu financier, puis bloque la suite avec un verrou 🔒 invitant à s'abonner :
-    * Si la news concerne un outil ou un modèle : ajoute le teaser vers l'offre Apprentis. Exemple : "🔒 Le prompt testé prêt à copier-coller et le mini-tutoriel pas-à-pas sont disponibles dans le canal Apprentis."
-    * Si la news concerne une levée de fonds ou un géant de la tech : ajoute le teaser vers l'offre Investisseurs. Exemple : "🔒 L'analyse d'impact financier et les opportunités de marché sont réservées aux membres Investisseurs."
-    * Tu peux aussi mentionner les deux offres si pertinent.
-  - Ajoute le bouton/lien d'abonnement : {LANDING_URL}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CANAL 2 : APPRENTIS (abonnement payant) — Pratique & Compétences
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Rôle : Former l'abonné, lui faire gagner du temps et lui donner des outils concrets à essayer immédiatement.
-• Longueur : 1500 caractères maximum.
-• Structure obligatoire :
-  - 🎓 TITRE CLAIR + ÉTIQUETTE DE CATÉGORIE (Agents, No-Code, Prompting, Modèles).
-  - 📰 En 3 points : Résumé simple de ce que fait la nouveauté (3 puces).
-  - 🛠️ Comment l'essayer tout de suite : Mini-tutoriel pas-à-pas en 3 étapes numérotées.
-  - 📋 Le Prompt prêt à copier-coller : Un prompt concret, optimisé et prêt à l'emploi lié à cette news (format code si pertinent).
-  - 💡 Pourquoi c'est utile pour vous : Le gain de temps ou de productivité direct.
-  - 🔗 Lien direct vers l'outil ou le GitHub / Source.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CANAL 3 : INVESTISSEURS (abonnement premium) — Marchés & Vision Stratégique
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Rôle : Offrir un avantage concurrentiel financier et stratégique aux décideurs et investisseurs.
-• Longueur : 1500 caractères maximum.
-• N'invente JAMAIS de chiffres : si l'article n'en donne pas, écris « Non communiqué ».
-• Structure obligatoire :
-  - 🚨 ALERTE MARCHÉ & STRATÉGIE IA : [Titre d'impact]
-  - 📊 Données chiffrées : Montant de levée, valorisation, part de marché ou variation de coût d'API.
-  - 🔍 Analyse d'impact :
-    • Acteurs favorisés / Qui gagne
-    • Acteurs disrompus ou fragilisés / Qui perd
-  - 📈 Signal d'investissement & Opportunité : Ce que cela annonce pour le secteur dans les 6 à 12 mois.
-  - 🛡️ Score d'impact stratégique : Note de 1 à 10 sur l'importance systémique de l'information.
-  - 📑 Sources financières / dépêches officielles vérifiées.
-Réponds UNIQUEMENT sous forme de JSON strict :
-{{
-  "is_duplicate": false,
-  "relevance_score": 8,
-  "is_selected": true,
-  "channel_free": "texte formaté du canal gratuit",
-  "channel_apprentices": "texte formaté du canal apprentis",
-  "channel_investors": "texte formaté du canal investisseurs"
-}}
-"""
-
-        try:
-            if self.provider == "groq":
-                response = self.groq_client.chat.completions.create(
-                    model=GROQ_MODEL,
-                    messages=[
-                        {"role": "system", "content": "Tu es le moteur éditorial d'AIBeacons qui rédige des publications captivantes pour 3 canaux Telegram. Tu réponds UNIQUEMENT en JSON valide."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=4500,
-                    response_format={"type": "json_object"}
-                )
-                raw_text = response.choices[0].message.content or ""
-            else:
-                from google.genai import types
-                response = self.gemini_client.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.3
-                    )
-                )
-                raw_text = response.text or ""
-
-            data = self._extract_json(raw_text)
-            score = int(data.get("relevance_score", 0))
-            is_dup = bool(data.get("is_duplicate", False))
-            is_selected = bool(data.get("is_selected", False)) and not is_dup
-
-            channel_free = data.get("channel_free", "").strip()
-            channel_apprentices = data.get("channel_apprentices", "").strip()
-            channel_investors = data.get("channel_investors", "").strip()
-
-            # Message par défaut / fallback si l'un est vide
-            telegram_message = channel_free
-
-            return {
-                "is_duplicate": is_dup,
-                "relevance_score": score,
-                "is_selected": is_selected,
-                "telegram_message": telegram_message,
-                "channel_free": channel_free,
-                "channel_apprentices": channel_apprentices,
-                "channel_investors": channel_investors
-            }
-        except Exception as e:
-            logger.error(f"Erreur analyse IA ({self.provider}) pour '{article.get('title')}': {e}")
+        info = self._classify(article, recent_topics)
+        if info is None:
             return None
+
+        is_dup = info["is_duplicate"]
+        general = info["relevance_score"]
+        learning = info["learning_score"]
+        market = info["market_score"]
+
+        free_ok = (not is_dup) and general >= MIN_RELEVANCE_SCORE
+        pro_ok = (not is_dup) and learning >= MIN_PRO_SCORE
+        vip_ok = (not is_dup) and market >= MIN_VIP_SCORE
+
+        channel_free = channel_pro = channel_vip = ""
+
+        if pro_ok:
+            time.sleep(1)
+            channel_pro = self._write_pro(article)
+        if vip_ok:
+            time.sleep(1)
+            channel_vip = self._write_vip(article)
+        if free_ok:
+            if pro_ok and (not vip_ok or learning >= market):
+                teaser = "pro"
+            elif vip_ok:
+                teaser = "vip"
+            else:
+                teaser = "both"
+            time.sleep(1)
+            channel_free = self._write_free(article, teaser)
+
+        is_selected = bool(channel_free or channel_pro or channel_vip)
+        telegram_message = channel_free or channel_pro or channel_vip
+
+        logger.info(
+            f"Notes : général={general}, apprentissage={learning}, marché={market} -> "
+            f"gratuit={'oui' if channel_free else 'non'}, "
+            f"pro={'oui' if channel_pro else 'non'}, "
+            f"vip={'oui' if channel_vip else 'non'}"
+        )
+
+        return {
+            "is_duplicate": is_dup,
+            "relevance_score": max(general, learning, market),
+            "is_selected": is_selected,
+            "telegram_message": telegram_message,
+            "channel_free": channel_free,
+            "channel_apprentices": channel_pro,
+            "channel_investors": channel_vip
+        }
