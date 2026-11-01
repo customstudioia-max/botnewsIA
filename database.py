@@ -28,14 +28,30 @@ def init_db() -> None:
                 relevance_score INTEGER DEFAULT 0,
                 is_selected INTEGER DEFAULT 0,
                 telegram_message TEXT,
-                posted_at TEXT
+                message_free TEXT,
+                message_apprentices TEXT,
+                message_investors TEXT,
+                posted_at TEXT,
+                posted_at_free TEXT,
+                posted_at_apprentices TEXT,
+                posted_at_investors TEXT
             )
         """)
-        # Migration si la colonne image_url n'existait pas encore
-        try:
-            conn.execute("ALTER TABLE articles ADD COLUMN image_url TEXT")
-        except sqlite3.OperationalError:
-            pass
+        # Migration si les colonnes n'existaient pas encore
+        columns_to_add = [
+            ("image_url", "TEXT"),
+            ("message_free", "TEXT"),
+            ("message_apprentices", "TEXT"),
+            ("message_investors", "TEXT"),
+            ("posted_at_free", "TEXT"),
+            ("posted_at_apprentices", "TEXT"),
+            ("posted_at_investors", "TEXT")
+        ]
+        for col, col_type in columns_to_add:
+            try:
+                conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {col_type}")
+            except sqlite3.OperationalError:
+                pass
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_url_hash ON articles(url_hash)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_normalized_title ON articles(normalized_title)")
@@ -107,23 +123,55 @@ def get_unprocessed_articles(limit: int = 30) -> List[Dict[str, Any]]:
         """, (limit,))
         return [dict(row) for row in cursor.fetchall()]
 
-def update_article_curation(article_id: int, relevance_score: int, telegram_message: str, is_selected: bool) -> None:
-    """Met à jour l'évaluation et le texte de synthèse rédigé par l'IA."""
+def update_article_curation(
+    article_id: int,
+    relevance_score: int,
+    telegram_message: str,
+    is_selected: bool,
+    message_free: str = "",
+    message_apprentices: str = "",
+    message_investors: str = ""
+) -> None:
+    """Met à jour l'évaluation et les 3 textes de synthèse IA pour AIBeacons."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE articles
-            SET relevance_score = ?, telegram_message = ?, is_selected = ?
+            SET relevance_score = ?,
+                telegram_message = ?,
+                is_selected = ?,
+                message_free = ?,
+                message_apprentices = ?,
+                message_investors = ?
             WHERE id = ?
-        """, (relevance_score, telegram_message, 1 if is_selected else 0, article_id))
+        """, (
+            relevance_score,
+            telegram_message,
+            1 if is_selected else 0,
+            message_free or telegram_message,
+            message_apprentices,
+            message_investors,
+            article_id
+        ))
         conn.commit()
 
-def mark_as_posted(article_id: int) -> None:
-    """Marque l'article comme publié sur Telegram."""
-    posted_at = datetime.utcnow().isoformat()
+def mark_as_posted(article_id: int, channel_type: str = "all") -> None:
+    """Marque l'article comme publié pour un canal spécifique ou tous."""
+    now = datetime.utcnow().isoformat()
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("UPDATE articles SET posted_at = ? WHERE id = ?", (posted_at, article_id))
+        if channel_type == "free":
+            cursor.execute("UPDATE articles SET posted_at_free = ?, posted_at = COALESCE(posted_at, ?) WHERE id = ?", (now, now, article_id))
+        elif channel_type == "apprentices":
+            cursor.execute("UPDATE articles SET posted_at_apprentices = ? WHERE id = ?", (now, article_id))
+        elif channel_type == "investors":
+            cursor.execute("UPDATE articles SET posted_at_investors = ? WHERE id = ?", (now, article_id))
+        else:
+            cursor.execute("""
+                UPDATE articles
+                SET posted_at = ?, posted_at_free = ?, posted_at_apprentices = ?, posted_at_investors = ?
+                WHERE id = ?
+            """, (now, now, now, now, article_id))
         conn.commit()
 
 def get_recent_posted_titles(limit: int = 30) -> List[str]:

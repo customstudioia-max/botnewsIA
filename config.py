@@ -9,10 +9,16 @@ DATA_DIR.mkdir(exist_ok=True)
 # Charger les variables d'environnement (.env si présent, sinon environnement système)
 load_dotenv(BASE_DIR / ".env")
 
-# Telegram
+# Telegram - Canaux AIBeacons
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+TELEGRAM_CHANNEL_ID_FREE = os.getenv("TELEGRAM_CHANNEL_ID_FREE", "").strip() or os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+TELEGRAM_CHANNEL_ID_APPRENTICES = os.getenv("TELEGRAM_CHANNEL_ID_APPRENTICES", "").strip()
+TELEGRAM_CHANNEL_ID_INVESTORS = os.getenv("TELEGRAM_CHANNEL_ID_INVESTORS", "").strip()
+TELEGRAM_CHANNEL_ID = TELEGRAM_CHANNEL_ID_FREE  # Rétro-compatibilité
 TELEGRAM_ADMIN_ID = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
+
+# Paramètres AIBeacons
+LANDING_URL = os.getenv("LANDING_URL", "https://aibeacons.vercel.app#tarifs").strip()
 
 # Groq (DeepSeek R1 gratuit)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()

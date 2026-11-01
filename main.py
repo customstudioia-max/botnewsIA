@@ -87,7 +87,10 @@ async def run_pipeline() -> None:
                 article_id=art["id"],
                 relevance_score=curation["relevance_score"],
                 telegram_message=curation["telegram_message"],
-                is_selected=curation["is_selected"]
+                is_selected=curation["is_selected"],
+                message_free=curation.get("channel_free", ""),
+                message_apprentices=curation.get("channel_apprentices", ""),
+                message_investors=curation.get("channel_investors", "")
             )
             if curation.get("is_duplicate"):
                 logger.info("Article rejeté : doublon d'un sujet déjà publié.")
@@ -104,45 +107,84 @@ async def run_pipeline() -> None:
                     "id": art["id"],
                     "title": art["title"],
                     "message": curation["telegram_message"],
+                    "channel_free": curation.get("channel_free") or curation["telegram_message"],
+                    "channel_apprentices": curation.get("channel_apprentices", ""),
+                    "channel_investors": curation.get("channel_investors", ""),
                     "image_url": image_url,
                     "source_url": art.get("url")
                 })
         # Pause légère pour respecter les quotas de l'API
         await asyncio.sleep(2)
 
-    # 3. Publication sur Telegram
+    # 3. Publication sur Telegram (Diffusion sur les 3 canaux configurés)
     logger.info(f"Articles qualifiés pour publication : {len(posts_to_publish)}")
     published_count = 0
 
     for item in posts_to_publish[:config.MAX_POSTS_PER_RUN]:
         safe_title = item['title'][:50].encode('ascii', errors='ignore').decode('ascii')
-        logger.info(f"Publication sur Telegram : '{safe_title}...'")
-        success = await telegram.send_news_post(
-            text=item["message"],
+        logger.info(f"Publication sur Telegram (AIBeacons) : '{safe_title}...'")
+
+        # 1. Canal Gratuit (Aimant & Teaser)
+        ok_free = await telegram.send_news_post(
+            text=item["channel_free"],
             image_url=item.get("image_url"),
-            source_url=item.get("source_url")
+            source_url=item.get("source_url"),
+            channel_id=config.TELEGRAM_CHANNEL_ID_FREE,
+            channel_name="Canal Gratuit"
         )
-        if success:
-            database.mark_as_posted(item["id"])
+        if ok_free:
+            database.mark_as_posted(item["id"], "free")
+
+        # 2. Canal Apprentis (si configuré et message présent)
+        if config.TELEGRAM_CHANNEL_ID_APPRENTICES and item.get("channel_apprentices"):
+            await asyncio.sleep(2)
+            ok_app = await telegram.send_news_post(
+                text=item["channel_apprentices"],
+                image_url=item.get("image_url"),
+                source_url=item.get("source_url"),
+                channel_id=config.TELEGRAM_CHANNEL_ID_APPRENTICES,
+                channel_name="Canal Apprentis"
+            )
+            if ok_app:
+                database.mark_as_posted(item["id"], "apprentices")
+
+        # 3. Canal Investisseurs (si configuré et message présent)
+        if config.TELEGRAM_CHANNEL_ID_INVESTORS and item.get("channel_investors"):
+            await asyncio.sleep(2)
+            ok_inv = await telegram.send_news_post(
+                text=item["channel_investors"],
+                image_url=item.get("image_url"),
+                source_url=item.get("source_url"),
+                channel_id=config.TELEGRAM_CHANNEL_ID_INVESTORS,
+                channel_name="Canal Investisseurs"
+            )
+            if ok_inv:
+                database.mark_as_posted(item["id"], "investors")
+
+        if ok_free:
             published_count += 1
-            # Délai entre deux publications pour éviter le spam
+            # Délai entre deux publications pour éviter le flood
             await asyncio.sleep(4)
         else:
-            logger.warning(f"Échec de publication pour l'article #{item['id']}")
+            logger.warning(f"Échec de publication principale pour l'article #{item['id']}")
 
     logger.info(f"=== Fin du cycle : {published_count} messages publiés sur Telegram ===")
 
 def display_status():
     """Affiche l'état des configurations et les statistiques de la base."""
     stats = database.get_stats()
-    print("\n--- STATISTIQUES BOT NEWS IA (MxM Academy) ---")
+    print("\n--- STATISTIQUES BOT NEWS IA (AIBeacons) ---")
     print(f"Total articles indexés : {stats['total_articles']}")
     print(f"Total messages publiés  : {stats['posted_articles']}")
     print(f"Articles en attente     : {stats['pending_articles']}")
-    print("\n--- ÉTAT DE LA CONFIGURATION ---")
+    print("\n--- ÉTAT DES 3 CANAUX TELEGRAM ---")
     print(f"Clé Telegram configurée : {'Oui' if config.TELEGRAM_BOT_TOKEN else 'Non (manquante dans .env)'}")
-    print(f"Canal Telegram          : {config.TELEGRAM_CHANNEL_ID or 'Non configuré'}")
-    print(f"Clé Groq (DeepSeek)     : {'Oui' if config.GROQ_API_KEY else 'Non (manquante dans .env)'}")
+    print(f"Canal 1 - Gratuit       : {config.TELEGRAM_CHANNEL_ID_FREE or 'Non configuré'}")
+    print(f"Canal 2 - Apprentis     : {config.TELEGRAM_CHANNEL_ID_APPRENTICES or 'Non configuré (optionnel)'}")
+    print(f"Canal 3 - Investisseurs : {config.TELEGRAM_CHANNEL_ID_INVESTORS or 'Non configuré (optionnel)'}")
+    print(f"Lien d'abonnement       : {config.LANDING_URL}")
+    print("\n--- FOURNISSEUR IA ---")
+    print(f"Clé Groq                : {'Oui' if config.GROQ_API_KEY else 'Non (manquante dans .env)'}")
     print(f"Modèle Groq             : {config.GROQ_MODEL}")
     print(f"Clé Gemini (secours)    : {'Oui' if config.GEMINI_API_KEY else 'Non (optionnelle)'}")
     print(f"Fréquence de passage    : Toutes les {config.FETCH_INTERVAL_MINUTES} minutes")
