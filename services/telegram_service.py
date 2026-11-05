@@ -131,12 +131,13 @@ def markdown_to_telegraph_nodes(text: str) -> List[Dict[str, Any]]:
 
 
 def page_title_from(summary: str) -> str:
-    """Titre de la page : première ligne non vide du résumé, sans balisage."""
-    for line in (summary or "").splitlines():
-        clean = to_plain(line).strip()
-        if clean:
-            return clean[:200]
-    return "AIBeacons"
+    """Titre de la page : première ligne du résumé, en sautant l'en-tête court (ex. « 🔴 NEWS IA »)."""
+    lines = [to_plain(l).strip() for l in (summary or "").splitlines() if l.strip()]
+    if not lines:
+        return "AIBeacons"
+    if len(lines) > 1 and len(lines[0]) <= 30:
+        return lines[1][:200]
+    return lines[0][:200]
 
 
 # ----------------------------------------------------------------------
@@ -228,11 +229,12 @@ class TelegramPublisher:
         channel_name: str = "Canal"
     ) -> bool:
         """
-        Publie une news sur le canal indiqué :
-        - image de la news + résumé avec émojis en légende
-        - bouton « Lire dans Telegram » (page Instant View avec le contenu détaillé)
-        - bouton « Source officielle »
-        Si l'image ou la page Instant View échouent, le bot se rabat sur un message plus simple.
+        Publie UN seul message court par news :
+        - texte court avec émojis (résumé, utilité, comment l'essayer)
+        - carte Instant View en dessous : image de la news + bouton violet « INSTANT VIEW »
+          (la page Telegraph contient le détail : points clés, pas à pas, prompt...)
+        - petit bouton « Source officielle » sous le message
+        Si la page Instant View échoue, le bot se rabat sur image + légende, puis sur un simple texte.
         """
         target_channel = channel_id or self.channel_free
         if not self.bot or not target_channel:
@@ -244,17 +246,39 @@ class TelegramPublisher:
             logger.warning(f"Publication annulée pour {channel_name} : texte vide.")
             return False
 
-        # Page Instant View
+        # Page Instant View (image + détails)
         iv_url = await self.create_instant_view_page(summary, details, image_url, source_url)
 
-        buttons = []
-        if iv_url:
-            buttons.append([InlineKeyboardButton(text="📖 Lire dans Telegram", url=iv_url)])
+        reply_markup = None
         if source_url:
-            buttons.append([InlineKeyboardButton(text="🌐 Source officielle", url=source_url)])
-        reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
+            reply_markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(text="🌐 Source officielle", url=source_url)]]
+            )
 
-        # 1) Image + résumé en légende
+        # 1) Message court + carte Instant View (image en bas du texte, bouton violet dans la carte)
+        if iv_url:
+            preview_options = LinkPreviewOptions(
+                is_disabled=False,
+                url=iv_url,
+                prefer_large_media=True,
+                show_above_text=False
+            )
+            body_text = cut(summary, MESSAGE_LIMIT)
+            for parse_mode, content in ((ParseMode.MARKDOWN, body_text), (None, to_plain(body_text))):
+                try:
+                    await self.bot.send_message(
+                        chat_id=target_channel,
+                        text=content,
+                        parse_mode=parse_mode,
+                        link_preview_options=preview_options,
+                        reply_markup=reply_markup
+                    )
+                    logger.info(f"Message publié avec succès sur {channel_name} (***) [Instant View].")
+                    return True
+                except Exception as e:
+                    logger.warning(f"Envoi Instant View échoué sur {channel_name} ({parse_mode}) : {e}")
+
+        # 2) Sans Instant View : image + résumé en légende
         if image_url:
             caption = cut(summary, CAPTION_LIMIT)
             for parse_mode, cap in ((ParseMode.MARKDOWN, caption), (None, to_plain(caption))):
@@ -266,23 +290,16 @@ class TelegramPublisher:
                         parse_mode=parse_mode,
                         reply_markup=reply_markup
                     )
-                    logger.info(
-                        f"Message publié avec succès sur {channel_name} ({'***'}) "
-                        f"[image + {'Instant View' if iv_url else 'sans Instant View'}]."
-                    )
+                    logger.info(f"Message publié avec succès sur {channel_name} (***) [image, sans Instant View].")
                     return True
                 except Exception as e:
                     logger.warning(f"Envoi avec image échoué sur {channel_name} ({parse_mode}) : {e}")
 
-        # 2) Sans image : message texte avec aperçu du lien Instant View (ou de la source)
-        preview_url = iv_url or source_url
+        # 3) Dernier recours : texte avec aperçu de la source
         preview_options = None
-        if preview_url:
+        if source_url:
             preview_options = LinkPreviewOptions(
-                is_disabled=False,
-                url=preview_url,
-                prefer_large_media=True,
-                show_above_text=True
+                is_disabled=False, url=source_url, prefer_large_media=True, show_above_text=False
             )
         body_text = cut(summary, MESSAGE_LIMIT)
         for parse_mode, content in ((ParseMode.MARKDOWN, body_text), (None, to_plain(body_text))):
@@ -294,7 +311,7 @@ class TelegramPublisher:
                     link_preview_options=preview_options,
                     reply_markup=reply_markup
                 )
-                logger.info(f"Message publié avec succès sur {channel_name} ({'***'}) [texte].")
+                logger.info(f"Message publié avec succès sur {channel_name} (***) [texte].")
                 return True
             except Exception as e:
                 logger.warning(f"Envoi texte échoué sur {channel_name} ({parse_mode}) : {e}")

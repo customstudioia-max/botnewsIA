@@ -20,9 +20,9 @@ MIN_PRO_SCORE = int(os.getenv("MIN_PRO_SCORE", "").strip() or "6")
 MIN_VIP_SCORE = int(os.getenv("MIN_VIP_SCORE", "").strip() or "6")
 
 # Limites de longueur (Telegram accepte 4096 caractères max par message)
-MAX_FREE_CHARS = 800
-MAX_PRO_CHARS = 2400
-MAX_VIP_CHARS = 2200
+MAX_FREE_CHARS = 500
+MAX_PRO_CHARS = 1300
+MAX_VIP_CHARS = 1300
 
 # Séparateur entre le résumé (légende de l'image) et le contenu détaillé (page Instant View)
 DETAILS_MARK = "===DETAILS==="
@@ -191,12 +191,13 @@ Réponds UNIQUEMENT avec ce JSON :
 
 Rôle : informer simplement, prouver la valeur du service et donner envie de s'abonner.
 Structure obligatoire :
-- Un titre court et accrocheur avec 1 émoji, en gras (*Titre*).
-- Un résumé en 2 ou 3 phrases simples, sans jargon, avec 2 ou 3 émojis bien placés.
+- Ligne 1 : 🔴 *NEWS IA*
+- Ligne 2 : un titre court et accrocheur avec 1 émoji, en gras (*Titre*).
+- Une ou deux phrases courtes et simples, sans jargon, avec 1 ou 2 émojis d'actualité parmi 📢 ⚡ 🆕 🔥.
 - {teaser_rule}
 - Une dernière ligne : 👉 S'abonner : {LANDING_URL}
 
-Règles : 700 caractères maximum au total (le texte sera la légende d'une image). Pas de lien vers la source : un bouton s'en charge. N'invente aucun fait ni chiffre absent de l'actualité.
+Règles : 400 caractères maximum au total, texte aéré et très court. Pas de lien vers la source : un bouton s'en charge. N'invente aucun fait ni chiffre absent de l'actualité.
 Format Telegram : *gras* avec un seul astérisque, _italique_, [texte](lien). Pas de titres avec #.
 Réponds uniquement avec le texte de la publication, sans introduction ni commentaire."""
         try:
@@ -212,29 +213,24 @@ Réponds uniquement avec le texte de la publication, sans introduction ni commen
 
 Ta réponse a DEUX PARTIES, séparées par une ligne contenant uniquement {DETAILS_MARK}
 
-PARTIE 1 : le résumé affiché dans le canal, avec l'image (600 caractères maximum) :
-🎓 *TITRE CLAIR* avec 1 émoji
-Un résumé de la news en 2 ou 3 phrases simples, avec 2 ou 3 émojis bien placés.
-🏷️ Catégorie : Agents, No-Code, Prompting, Modèles ou Outils
-👇 Appuyez sur le bouton ci-dessous pour lire le tuto et récupérer le prompt.
+PARTIE 1 : le message affiché dans le canal. Il doit être COURT, propre et donner envie d'ouvrir la suite (400 caractères maximum) :
+🔴 *NEWS IA* 🎓
+*TITRE CLAIR* avec 1 émoji
+Une seule phrase qui résume la news, avec 1 émoji d'actualité parmi 📢 ⚡ 🆕 🔥.
+💡 *Pourquoi c'est utile* : une phrase courte (15 mots maximum).
+🛠️ *Essayer tout de suite* : l'action concrète à faire, une phrase courte (15 mots maximum).
 
 {DETAILS_MARK}
 
-PARTIE 2 : la page lue dans Telegram (1500 caractères maximum) :
+PARTIE 2 : la page lue dans Telegram, très concise (700 caractères maximum) :
 📰 *En 3 points*
-• point 1
-• point 2
-• point 3
+• 3 puces, une courte phrase chacune (12 mots maximum)
 
-🛠️ *Comment l'essayer tout de suite*
-1. étape 1
-2. étape 2
-3. étape 3
+🛠️ *Pas à pas*
+1. 3 étapes numérotées, une ligne chacune (10 mots maximum)
 
 📋 *Prompt prêt à copier-coller*
-Un prompt concret lié à cette actualité, entre accents graves (`...`).
-
-💡 *Pourquoi c'est utile* : le gain de temps ou de productivité direct, en une phrase.
+Un prompt concret de 2 ou 3 lignes maximum, entre accents graves (`...`).
 
 Règles : reste fidèle à l'actualité : n'invente aucune fonctionnalité, aucun prix, aucune étape qui n'existe pas. Si l'actualité ne permet pas un vrai tutoriel, propose une manière concrète d'exploiter l'information sans prétendre qu'un outil fait ce qu'il ne fait pas. Pas de lien vers la source : un bouton s'en charge.
 Format Telegram : *gras* avec un seul astérisque, _italique_, `code`. Pas de titres avec #.
@@ -252,21 +248,23 @@ Réponds uniquement avec le texte, sans introduction ni commentaire."""
 
 Ta réponse a DEUX PARTIES, séparées par une ligne contenant uniquement {DETAILS_MARK}
 
-PARTIE 1 : le résumé affiché dans le canal, avec l'image (600 caractères maximum) :
-🚨 *ALERTE MARCHÉ IA* : titre d'impact
-Un résumé de la news en 2 ou 3 phrases, avec 2 ou 3 émojis bien placés.
-👇 Appuyez sur le bouton ci-dessous pour lire l'analyse complète.
+PARTIE 1 : le message affiché dans le canal. Il doit être COURT, propre et donner envie d'ouvrir la suite (400 caractères maximum) :
+🚨 *ALERTE MARCHÉ IA* 📈
+*TITRE D'IMPACT* avec 1 émoji
+Une seule phrase qui résume la news, avec 1 émoji d'actualité parmi ⚡ 💰 🆕 🔥.
+💡 *Pourquoi ça compte* : une phrase courte (15 mots maximum).
+📈 *Opportunité* : une phrase courte (15 mots maximum), présentée comme une analyse et non comme une certitude.
 
 {DETAILS_MARK}
 
-PARTIE 2 : la page lue dans Telegram (1500 caractères maximum) :
-📊 *Données clés* : montants, valorisation, part de marché ou variation de prix, uniquement s'ils figurent dans l'actualité. Sinon écris « Non communiqué ».
+PARTIE 2 : la page lue dans Telegram, très concise (700 caractères maximum) :
+📊 *Données clés* : une ligne avec montants, valorisation ou part de marché, uniquement s'ils figurent dans l'actualité. Sinon écris « Non communiqué ».
 
 🔍 *Analyse d'impact*
-• Qui gagne : ...
-• Qui est fragilisé : ...
+• Qui gagne : une courte phrase
+• Qui est fragilisé : une courte phrase
 
-📈 *Signal et opportunité* : ce que cela annonce pour le secteur dans les 6 à 12 mois, présenté comme une analyse et non comme une certitude.
+🔭 *Signal à 6-12 mois* : 1 ou 2 phrases, présentées comme une analyse.
 
 🛡️ *Importance stratégique* : X/10
 
